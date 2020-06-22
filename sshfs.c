@@ -121,6 +121,7 @@
 #define SFTP_EXT_STATVFS "statvfs@openssh.com"
 #define SFTP_EXT_HARDLINK "hardlink@openssh.com"
 #define SFTP_EXT_FSYNC "fsync@openssh.com"
+#define SFTP_EXT_LSETSTAT "lsetstat@openssh.com"
 
 #define PROTO_VERSION 3
 
@@ -371,6 +372,7 @@ struct sshfs {
 	int ext_statvfs;
 	int ext_hardlink;
 	int ext_fsync;
+	int ext_lsetstat;
 	struct fuse_operations *op;
 
 	/* statistics */
@@ -1623,6 +1625,9 @@ static int sftp_init_reply_ok(struct conn *conn, struct buffer *buf,
 			if (strcmp(ext, SFTP_EXT_FSYNC) == 0 &&
 			    strcmp(extdata, "1") == 0)
 				sshfs.ext_fsync = 1;
+			if (strcmp(ext, SFTP_EXT_LSETSTAT) == 0 &&
+			    strcmp(extdata, "1") == 0)
+				sshfs.ext_lsetstat = 1;
 
 			free(ext);
 			free(extdata);
@@ -2578,20 +2583,35 @@ static int sshfs_chmod(const char *path, mode_t mode,
 	}
 
 	buf_init(&buf, 0);
-	if (sf == NULL)
-		buf_add_path(&buf, path);
-	else 
-		buf_add_buf(&buf, &sf->handle);
+	if (sf == NULL) {
+        if (sshfs.ext_lsetstat && !sshfs.follow_symlinks) {
+            buf_add_string(&buf, SFTP_EXT_LSETSTAT);
+        }
+        buf_add_path(&buf, path);
+    } else {
+        buf_add_buf(&buf, &sf->handle);
+    }
 	
 	buf_add_uint32(&buf, SSH_FILEXFER_ATTR_PERMISSIONS);
 	buf_add_uint32(&buf, mode);
 	
-	/* FIXME: really needs LSETSTAT extension (debian Bug#640038) */
 	// Commutes with pending write(), so we can use any connection
 	// if the file is not open.
-	err = sftp_request(get_conn(sf, NULL),
-			   sf == NULL ? SSH_FXP_SETSTAT : SSH_FXP_FSETSTAT,
-			   &buf, SSH_FXP_STATUS, NULL);
+	if (sf == NULL) {
+        if (sshfs.ext_lsetstat && !sshfs.follow_symlinks) {
+            err = sftp_request(get_conn(sf, NULL),
+                               SSH_FXP_EXTENDED,
+                               &buf, SSH_FXP_STATUS, NULL);
+        } else {
+            err = sftp_request(get_conn(sf, NULL),
+                               SSH_FXP_SETSTAT,
+                               &buf, SSH_FXP_STATUS, NULL);
+        }
+	} else {
+        err = sftp_request(get_conn(sf, NULL),
+                   SSH_FXP_FSETSTAT,
+                   &buf, SSH_FXP_STATUS, NULL);
+    }
 	buf_free(&buf);
 	return err;
 }
@@ -2624,19 +2644,36 @@ static int sshfs_chown(const char *path, uid_t uid, gid_t gid,
 			return -EPERM;
 
 	buf_init(&buf, 0);
-	if (sf == NULL)
-		buf_add_path(&buf, path);
-	else 
-		buf_add_buf(&buf, &sf->handle);
+    if (sf == NULL) {
+        if (sshfs.ext_lsetstat && !sshfs.follow_symlinks) {
+            buf_add_string(&buf, SFTP_EXT_LSETSTAT);
+        }
+        buf_add_path(&buf, path);
+    } else {
+        buf_add_buf(&buf, &sf->handle);
+    }
+
 	buf_add_uint32(&buf, SSH_FILEXFER_ATTR_UIDGID);
 	buf_add_uint32(&buf, uid);
 	buf_add_uint32(&buf, gid);
 
 	// Commutes with pending write(), so we can use any connection
 	// if the file is not open.
-	err = sftp_request(get_conn(sf, NULL),
-			   sf == NULL ? SSH_FXP_SETSTAT : SSH_FXP_FSETSTAT,
-			   &buf, SSH_FXP_STATUS, NULL);
+    if (sf == NULL) {
+        if (sshfs.ext_lsetstat && !sshfs.follow_symlinks) {
+            err = sftp_request(get_conn(sf, NULL),
+                               SSH_FXP_EXTENDED,
+                               &buf, SSH_FXP_STATUS, NULL);
+        } else {
+            err = sftp_request(get_conn(sf, NULL),
+                               SSH_FXP_SETSTAT,
+                               &buf, SSH_FXP_STATUS, NULL);
+        }
+    } else {
+        err = sftp_request(get_conn(sf, NULL),
+                           SSH_FXP_FSETSTAT,
+                           &buf, SSH_FXP_STATUS, NULL);
+    }
 	buf_free(&buf);
 	return err;
 }
@@ -2674,17 +2711,34 @@ static int sshfs_utimens(const char *path, const struct timespec tv[2],
 	}
 
 	buf_init(&buf, 0);
-	if (sf == NULL)
-		buf_add_path(&buf, path);
-	else 
-		buf_add_buf(&buf, &sf->handle);
+    if (sf == NULL) {
+        if (sshfs.ext_lsetstat && !sshfs.follow_symlinks) {
+            buf_add_string(&buf, SFTP_EXT_LSETSTAT);
+        }
+        buf_add_path(&buf, path);
+    } else {
+        buf_add_buf(&buf, &sf->handle);
+    }
+
 	buf_add_uint32(&buf, SSH_FILEXFER_ATTR_ACMODTIME);
 	buf_add_uint32(&buf, asec);
 	buf_add_uint32(&buf, msec);
 
-	err = sftp_request(get_conn(sf, path),
-			   sf == NULL ? SSH_FXP_SETSTAT : SSH_FXP_FSETSTAT,
-			   &buf, SSH_FXP_STATUS, NULL);
+    if (sf == NULL) {
+        if (sshfs.ext_lsetstat && !sshfs.follow_symlinks) {
+            err = sftp_request(get_conn(sf, NULL),
+                               SSH_FXP_EXTENDED,
+                               &buf, SSH_FXP_STATUS, NULL);
+        } else {
+            err = sftp_request(get_conn(sf, NULL),
+                               SSH_FXP_SETSTAT,
+                               &buf, SSH_FXP_STATUS, NULL);
+        }
+    } else {
+        err = sftp_request(get_conn(sf, NULL),
+                           SSH_FXP_FSETSTAT,
+                           &buf, SSH_FXP_STATUS, NULL);
+    }
 	buf_free(&buf);
 	return err;
 }
